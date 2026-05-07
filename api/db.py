@@ -19,6 +19,7 @@ class Medico(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(255), nullable=False)
     crm = Column(String(20), unique=True, nullable=True)
+    uf_crm = Column(String(2), nullable=True)
     email = Column(String(255), unique=True, index=True, nullable=True)
     password_hash = Column(String(255), nullable=True)
     memed_token = Column(String, nullable=True)

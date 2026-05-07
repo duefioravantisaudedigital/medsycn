@@ -81,13 +81,14 @@ def token_required(f):
 @app.route('/auth/signup', methods=['POST'])
 def signup():
     data = flask_request.get_json()
+    nome = data.get('nome')
     email = data.get('email', '').lower().strip()
     password = data.get('password')
-    nome = data.get('nome')
     crm = data.get('crm')
+    uf_crm = data.get('uf_crm') # Novo campo
 
-    if not email or not password or not nome:
-        return jsonify({"error": "E-mail, senha e nome são obrigatórios"}), 400
+    if not all([nome, email, password, crm, uf_crm]):
+        return jsonify({"error": "Todos os campos (incluindo CRM e UF) são obrigatórios"}), 400
 
     db = SessionLocal()
     try:
@@ -95,11 +96,12 @@ def signup():
             return jsonify({"error": "E-mail já cadastrado"}), 400
         
         new_medico = Medico(
-            email=email,
             nome=nome,
+            email=email,
             crm=crm,
+            uf_crm=uf_crm.upper(), # Salva sempre em maiúsculo (Ex: SP)
             password_hash=hash_password(password),
-            is_active=False # Nasce inativo conforme o modelo híbrido
+            is_active=False
         )
         db.add(new_medico)
         db.commit()
@@ -297,5 +299,137 @@ def cadastrar_paciente(current_user):
                 db.commit()
             return jsonify({"status": "network_error", "error": str(e)}), 500
 
+    finally:
+        db.close()
+
+# =========================================
+# ROTAS DO DASHBOARD (Dados Reais)
+# =========================================
+
+@app.route('/dashboard/stats', methods=['GET'])
+@token_required
+def dashboard_stats(current_user):
+    """Retorna métricas gerais do médico logado."""
+    from sqlalchemy import func, extract
+    db = SessionLocal()
+    try:
+        medico_id = current_user.id
+        now = datetime.utcnow()
+        inicio_mes = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Total de consultas deste mês
+        total_mes = db.query(func.count(Consulta.id)).filter(
+            Consulta.medico_id == medico_id,
+            Consulta.data_consulta >= inicio_mes
+        ).scalar() or 0
+
+        # Total de pacientes únicos deste médico (todos os tempos)
+        total_pacientes = db.query(func.count(func.distinct(Consulta.paciente_id))).filter(
+            Consulta.medico_id == medico_id
+        ).scalar() or 0
+
+        # Sucessos deste mês
+        total_sucesso = db.query(func.count(SyncLog.id)).join(
+            Consulta, SyncLog.consulta_id == Consulta.id
+        ).filter(
+            Consulta.medico_id == medico_id,
+            Consulta.data_consulta >= inicio_mes,
+            SyncLog.status.like("SUCESSO%")
+        ).scalar() or 0
+
+        # Erros deste mês
+        total_erros = db.query(func.count(SyncLog.id)).join(
+            Consulta, SyncLog.consulta_id == Consulta.id
+        ).filter(
+            Consulta.medico_id == medico_id,
+            Consulta.data_consulta >= inicio_mes,
+            SyncLog.status.like("ERRO%")
+        ).scalar() or 0
+
+        taxa_sucesso = round((total_sucesso / max(total_sucesso + total_erros, 1)) * 100, 1)
+
+        return jsonify({
+            "processados_mes": total_mes,
+            "total_pacientes": total_pacientes,
+            "taxa_sucesso": taxa_sucesso,
+            "total_erros": total_erros,
+            "subscription_expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None,
+            "nome": current_user.nome,
+            "crm": current_user.crm,
+            "uf_crm": current_user.uf_crm
+        })
+    finally:
+        db.close()
+
+@app.route('/dashboard/pacientes', methods=['GET'])
+@token_required
+def dashboard_pacientes(current_user):
+    """Retorna a lista de pacientes do médico logado (sem duplicatas)."""
+    from sqlalchemy import func, desc
+    db = SessionLocal()
+    try:
+        # Busca pacientes únicos vinculados a este médico pela tabela de consultas
+        resultados = db.query(
+            Paciente.id,
+            Paciente.nome,
+            Paciente.cpf,
+            Paciente.email,
+            Paciente.telefone,
+            func.max(Consulta.data_consulta).label('ultima_consulta'),
+            func.count(Consulta.id).label('total_consultas')
+        ).join(
+            Consulta, Consulta.paciente_id == Paciente.id
+        ).filter(
+            Consulta.medico_id == current_user.id
+        ).group_by(
+            Paciente.id, Paciente.nome, Paciente.cpf, Paciente.email, Paciente.telefone
+        ).order_by(desc('ultima_consulta')).all()
+
+        pacientes = []
+        for r in resultados:
+            pacientes.append({
+                "id": r.id,
+                "nome": r.nome,
+                "cpf": r.cpf,
+                "email": r.email,
+                "telefone": r.telefone,
+                "ultima_consulta": r.ultima_consulta.isoformat() if r.ultima_consulta else None,
+                "total_consultas": r.total_consultas
+            })
+
+        return jsonify({"pacientes": pacientes, "total": len(pacientes)})
+    finally:
+        db.close()
+
+@app.route('/dashboard/historico', methods=['GET'])
+@token_required
+def dashboard_historico(current_user):
+    """Retorna o histórico de sincronizações do médico logado."""
+    from sqlalchemy import desc
+    db = SessionLocal()
+    try:
+        logs = db.query(
+            SyncLog.id,
+            SyncLog.status,
+            SyncLog.created_at,
+            Paciente.nome.label('paciente_nome')
+        ).join(
+            Consulta, SyncLog.consulta_id == Consulta.id
+        ).join(
+            Paciente, Consulta.paciente_id == Paciente.id
+        ).filter(
+            Consulta.medico_id == current_user.id
+        ).order_by(desc(SyncLog.created_at)).limit(50).all()
+
+        historico = []
+        for log in logs:
+            historico.append({
+                "id": log.id,
+                "status": log.status,
+                "data": log.created_at.isoformat() if log.created_at else None,
+                "paciente": log.paciente_nome
+            })
+
+        return jsonify({"historico": historico, "total": len(historico)})
     finally:
         db.close()
