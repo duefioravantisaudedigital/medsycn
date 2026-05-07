@@ -511,11 +511,15 @@ def dashboard_pacientes(current_user):
 @app.route('/dashboard/historico', methods=['GET'])
 @token_required
 def dashboard_historico(current_user):
-    """Retorna o histórico de sincronizações do médico logado."""
+    """Retorna o histórico de sincronizações do médico logado com paginação."""
+    page = int(flask_request.args.get('page', 1))
+    per_page = int(flask_request.args.get('per_page', 10))
+    offset = (page - 1) * per_page
+
     from sqlalchemy import desc
     db = SessionLocal()
     try:
-        logs = db.query(
+        query = db.query(
             SyncLog.id,
             SyncLog.status,
             SyncLog.data_hora,
@@ -526,12 +530,13 @@ def dashboard_historico(current_user):
             Paciente, Consulta.paciente_id == Paciente.id
         ).filter(
             Consulta.medico_id == current_user.id
-        ).order_by(desc(SyncLog.data_hora)).limit(50).all()
+        )
+
+        total = query.count()
+        logs = query.order_by(desc(SyncLog.data_hora)).limit(per_page).offset(offset).all()
 
         historico = []
         for log in logs:
-            # Ajuste simples de fuso horário (-3 horas para Brasília)
-            # Na exibição, o frontend cuidará de formatar, mas enviamos o ISO
             historico.append({
                 "id": log.id,
                 "status": log.status,
@@ -539,7 +544,12 @@ def dashboard_historico(current_user):
                 "paciente": log.paciente_nome
             })
 
-        return jsonify({"historico": historico, "total": len(historico)})
+        return jsonify({
+            "historico": historico, 
+            "total": total,
+            "page": page,
+            "per_page": per_page
+        })
     finally:
         db.close()
 
