@@ -68,6 +68,9 @@ def token_required(f):
             if not current_user.is_active:
                 return jsonify({'error': 'Sua conta ainda não foi ativada. Entre em contato com o suporte.'}), 403
             
+            if not current_user.is_active:
+                return jsonify({'error': 'Sua conta está desativada ou suspensa. Entre em contato com o suporte.'}), 403
+
             if current_user.subscription_expires_at and current_user.subscription_expires_at < datetime.utcnow():
                 return jsonify({'error': 'Sua assinatura expirou. Renove para continuar usando.'}), 403
             
