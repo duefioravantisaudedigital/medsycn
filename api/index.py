@@ -459,12 +459,16 @@ def dashboard_grafico(current_user):
 @app.route('/dashboard/pacientes', methods=['GET'])
 @token_required
 def dashboard_pacientes(current_user):
-    """Retorna a lista de pacientes do médico logado (sem duplicatas)."""
+    """Lista pacientes do médico logado com paginação."""
+    page = int(flask_request.args.get('page', 1))
+    per_page = int(flask_request.args.get('per_page', 10))
+    offset = (page - 1) * per_page
+
     from sqlalchemy import func, desc
     db = SessionLocal()
     try:
-        # Busca pacientes únicos vinculados a este médico pela tabela de consultas
-        resultados = db.query(
+        # Query base para filtrar pelo médico logado
+        query = db.query(
             Paciente.id,
             Paciente.nome,
             Paciente.cpf,
@@ -478,7 +482,10 @@ def dashboard_pacientes(current_user):
             Consulta.medico_id == current_user.id
         ).group_by(
             Paciente.id, Paciente.nome, Paciente.cpf, Paciente.email, Paciente.telefone
-        ).order_by(desc('ultima_consulta')).all()
+        )
+
+        total = query.count()
+        resultados = query.order_by(desc('ultima_consulta')).limit(per_page).offset(offset).all()
 
         pacientes = []
         for r in resultados:
@@ -492,7 +499,12 @@ def dashboard_pacientes(current_user):
                 "total_consultas": r.total_consultas
             })
 
-        return jsonify({"pacientes": pacientes, "total": len(pacientes)})
+        return jsonify({
+            "pacientes": pacientes,
+            "total": total,
+            "page": page,
+            "per_page": per_page
+        })
     finally:
         db.close()
 
