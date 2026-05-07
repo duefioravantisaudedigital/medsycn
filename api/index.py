@@ -112,7 +112,8 @@ def signup():
             uf_crm=uf_crm.upper(), # Salva sempre em maiúsculo (Ex: SP)
             password_hash=hash_password(password),
             is_active=True,
-            subscription_expires_at=expires_at
+            subscription_expires_at=expires_at,
+            plan_type="trial"
         )
         db.add(new_medico)
         db.commit()
@@ -147,6 +148,7 @@ def login():
                 "crm": medico.crm,
                 "uf_crm": medico.uf_crm,
                 "is_admin": medico.is_admin,
+                "plan_type": medico.plan_type,
                 "expires_at": medico.subscription_expires_at.isoformat() if medico.subscription_expires_at else None
             }
         })
@@ -531,6 +533,7 @@ def admin_get_users(current_user):
                 "uf_crm": m.uf_crm,
                 "is_active": m.is_active,
                 "is_admin": m.is_admin,
+                "plan_type": m.plan_type,
                 "expires_at": m.subscription_expires_at.isoformat() if m.subscription_expires_at else None
             })
         return jsonify(lista)
@@ -555,6 +558,7 @@ def admin_renew_user(current_user, user_id):
             
         medico.subscription_expires_at = base_date + timedelta(days=30)
         medico.is_active = True
+        medico.plan_type = "pro" # Muda para PRO ao renovar
         db.commit()
         
         return jsonify({"status": "ok", "new_expiry": medico.subscription_expires_at.isoformat()})

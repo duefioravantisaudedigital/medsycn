@@ -26,6 +26,7 @@ class Medico(Base):
     subscription_expires_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=False)
     is_admin = Column(Boolean, default=False)
+    plan_type = Column(String(20), default="trial") # trial, pro
 
 class Paciente(Base):
     __tablename__ = "pacientes"
