@@ -265,9 +265,12 @@ def cadastrar_paciente(current_user):
         data_agendamento = None
         if appointment_date:
             try:
-                data_agendamento = datetime.strptime(appointment_date, "%Y-%m-%d")
-            except ValueError:
-                pass
+                # Trata o formato ISO (YYYY-MM-DDTHH:MM:SS)
+                iso_date = appointment_date.replace('Z', '+00:00')
+                data_agendamento = datetime.fromisoformat(iso_date)
+            except Exception as e:
+                print(f"Erro ao converter data: {e}")
+                data_agendamento = datetime.utcnow()
 
         consulta = Consulta(
             paciente_id=paciente.id,
