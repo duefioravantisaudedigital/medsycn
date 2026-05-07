@@ -6,8 +6,10 @@ import requests
 
 from flask import Flask, request as flask_request, jsonify
 from flask_cors import CORS
+from functools import wraps
 
 from api.db import SessionLocal, Medico, Paciente, Consulta, SyncLog, init_db
+from api.auth_utils import hash_password, verify_password, create_access_token, decode_token
 
 app = Flask(__name__)
 # Configuração de CORS para permitir requisições de qualquer origem (extensão)
@@ -40,13 +42,120 @@ def get_headers(token):
 def health():
     return jsonify({"status": "online_vercel", "timestamp": datetime.now().isoformat()})
 
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if 'Authorization' in flask_request.headers:
+            auth_header = flask_request.headers['Authorization']
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ")[1]
+        
+        if not token:
+            return jsonify({'error': 'Token de acesso ausente!'}), 401
+        
+        data = decode_token(token)
+        if not data:
+            return jsonify({'error': 'Token inválido ou expirado!'}), 401
+        
+        db = SessionLocal()
+        try:
+            current_user = db.query(Medico).filter(Medico.id == data['sub']).first()
+            if not current_user:
+                return jsonify({'error': 'Médico não encontrado!'}), 401
+            
+            # Verificação de Assinatura e Atividade
+            if not current_user.is_active:
+                return jsonify({'error': 'Sua conta ainda não foi ativada. Entre em contato com o suporte.'}), 403
+            
+            if current_user.subscription_expires_at and current_user.subscription_expires_at < datetime.utcnow():
+                return jsonify({'error': 'Sua assinatura expirou. Renove para continuar usando.'}), 403
+            
+            # Passa o usuário atual para a rota
+            return f(current_user, *args, **kwargs)
+        finally:
+            db.close()
+            
+    return decorated
+
+@app.route('/auth/signup', methods=['POST'])
+def signup():
+    data = flask_request.get_json()
+    email = data.get('email', '').lower().strip()
+    password = data.get('password')
+    nome = data.get('nome')
+    crm = data.get('crm')
+
+    if not email or not password or not nome:
+        return jsonify({"error": "E-mail, senha e nome são obrigatórios"}), 400
+
+    db = SessionLocal()
+    try:
+        if db.query(Medico).filter(Medico.email == email).first():
+            return jsonify({"error": "E-mail já cadastrado"}), 400
+        
+        new_medico = Medico(
+            email=email,
+            nome=nome,
+            crm=crm,
+            password_hash=hash_password(password),
+            is_active=False # Nasce inativo conforme o modelo híbrido
+        )
+        db.add(new_medico)
+        db.commit()
+        return jsonify({"status": "ok", "message": "Cadastro realizado! Aguarde a ativação da sua conta."}), 201
+    finally:
+        db.close()
+
+@app.route('/auth/login', methods=['POST'])
+def login():
+    data = flask_request.get_json()
+    email = data.get('email', '').lower().strip()
+    password = data.get('password')
+
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).filter(Medico.email == email).first()
+        if not medico or not verify_password(password, medico.password_hash):
+            return jsonify({"error": "E-mail ou senha incorretos"}), 401
+        
+        if not medico.is_active:
+            return jsonify({"error": "Sua conta ainda não foi ativada. Entre em contato com o suporte."}), 403
+
+        # Token expira em 7 dias
+        token = create_access_token(data={"sub": medico.id, "email": medico.email})
+        
+        return jsonify({
+            "token": token,
+            "medico": {
+                "id": medico.id,
+                "nome": medico.nome,
+                "crm": medico.crm,
+                "expires_at": medico.subscription_expires_at.isoformat() if medico.subscription_expires_at else None
+            }
+        })
+    finally:
+        db.close()
+
+@app.route('/auth/me', methods=['GET'])
+@token_required
+def get_me(current_user):
+    return jsonify({
+        "id": current_user.id,
+        "nome": current_user.nome,
+        "crm": current_user.crm,
+        "is_active": current_user.is_active,
+        "expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None
+    })
+
 @app.route('/atualizar-token', methods=['POST'])
 def atualizar_token():
     # Na Vercel não salvamos token globalmente, a extensão deve enviar no payload
     return jsonify({"status": "ok", "message": "No modo serverless, o token deve vir no payload /cadastrar"})
 
 @app.route('/cadastrar', methods=['POST'])
-def cadastrar_paciente():
+@token_required
+def cadastrar_paciente(current_user):
     data = flask_request.get_json()
 
     if not data:
@@ -64,8 +173,10 @@ def cadastrar_paciente():
     state = data.get('state', '')
     city = data.get('city', '')
     zipcode = data.get('zipcode', '')
-    doctor_name = data.get('doctor_name', '').strip()
     token = data.get('memed_token', '').strip()
+
+    # O nome do médico agora vem do token autenticado
+    doctor_name = current_user.nome
 
     if not nome:
         return jsonify({"error": "Nome obrigatório"}), 400

@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Date, ForeignKey, TIMESTAMP
+from sqlalchemy import create_engine, Column, Integer, String, Date, ForeignKey, TIMESTAMP, Boolean, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
@@ -19,7 +19,12 @@ class Medico(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String(255), nullable=False)
     crm = Column(String(20), unique=True, nullable=True)
+    email = Column(String(255), unique=True, index=True, nullable=True)
+    password_hash = Column(String(255), nullable=True)
     memed_token = Column(String, nullable=True)
+    subscription_expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=False)
+    is_admin = Column(Boolean, default=False)
 
 class Paciente(Base):
     __tablename__ = "pacientes"
