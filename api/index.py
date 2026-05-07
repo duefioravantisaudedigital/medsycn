@@ -208,19 +208,15 @@ def cadastrar_paciente(current_user):
 
     db = SessionLocal()
     try:
-        medico = None
-        if doctor_name:
-            medico = db.query(Medico).filter(Medico.nome == doctor_name).first()
-            if not medico:
-                medico = Medico(nome=doctor_name, memed_token=token)
-                db.add(medico)
-                db.commit()
-                db.refresh(medico)
-            elif token and medico.memed_token != token:
-                # Atualiza o token do médico caso tenha mudado
-                medico.memed_token = token
-                db.commit()
+        # Usamos o médico que já está logado (current_user)
+        medico = db.merge(current_user) # Traz o objeto para a sessão atual do DB
+        
+        # Atualiza o token da Memed do médico logado, se necessário
+        if token and medico.memed_token != token:
+            medico.memed_token = token
+            db.commit()
 
+        # Busca ou cria o paciente
         paciente = db.query(Paciente).filter(Paciente.cpf == cpf).first()
         if not paciente:
             nasc_date = None
@@ -242,12 +238,11 @@ def cadastrar_paciente(current_user):
             db.commit()
             db.refresh(paciente)
 
-        consulta = None
-        if medico and paciente:
-            consulta = Consulta(paciente_id=paciente.id, medico_id=medico.id)
-            db.add(consulta)
-            db.commit()
-            db.refresh(consulta)
+        # Cria a consulta vinculada EXATAMENTE ao ID do médico logado
+        consulta = Consulta(paciente_id=paciente.id, medico_id=medico.id)
+        db.add(consulta)
+        db.commit()
+        db.refresh(consulta)
 
         try:
             resp = requests.post(API_URL, headers=headers, json=payload_memed, timeout=10)
