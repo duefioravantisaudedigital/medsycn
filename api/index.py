@@ -270,7 +270,7 @@ def cadastrar_paciente(current_user):
                 data_agendamento = datetime.fromisoformat(iso_date)
             except Exception as e:
                 print(f"Erro ao converter data: {e}")
-                data_agendamento = datetime.utcnow()
+                data_agendamento = datetime.utcnow() - timedelta(hours=3) # Brasília
 
         consulta = Consulta(
             paciente_id=paciente.id,
@@ -287,7 +287,11 @@ def cadastrar_paciente(current_user):
             if resp.status_code in [200, 201]:
                 dados = resp.json()
                 if consulta:
-                    sync_log = SyncLog(consulta_id=consulta.id, status="SUCESSO")
+                    sync_log = SyncLog(
+                        consulta_id=consulta.id, 
+                        status="SUCESSO",
+                        data_hora=datetime.utcnow() - timedelta(hours=3)
+                    )
                     db.add(sync_log)
                     db.commit()
                 return jsonify({
@@ -298,7 +302,11 @@ def cadastrar_paciente(current_user):
 
             elif resp.status_code == 422:
                 if consulta:
-                    sync_log = SyncLog(consulta_id=consulta.id, status="SUCESSO (JA_EXISTE)")
+                    sync_log = SyncLog(
+                        consulta_id=consulta.id, 
+                        status="SUCESSO (JA_EXISTE)",
+                        data_hora=datetime.utcnow() - timedelta(hours=3)
+                    )
                     db.add(sync_log)
                     db.commit()
                 try:
@@ -313,7 +321,11 @@ def cadastrar_paciente(current_user):
 
             else:
                 if consulta:
-                    sync_log = SyncLog(consulta_id=consulta.id, status=f"ERRO_MEMED ({resp.status_code})")
+                    sync_log = SyncLog(
+                        consulta_id=consulta.id, 
+                        status=f"ERRO_MEMED ({resp.status_code})",
+                        data_hora=datetime.utcnow() - timedelta(hours=3)
+                    )
                     db.add(sync_log)
                     db.commit()
                 try:
@@ -494,7 +506,7 @@ def dashboard_historico(current_user):
         logs = db.query(
             SyncLog.id,
             SyncLog.status,
-            SyncLog.created_at,
+            SyncLog.data_hora,
             Paciente.nome.label('paciente_nome')
         ).join(
             Consulta, SyncLog.consulta_id == Consulta.id
@@ -502,14 +514,16 @@ def dashboard_historico(current_user):
             Paciente, Consulta.paciente_id == Paciente.id
         ).filter(
             Consulta.medico_id == current_user.id
-        ).order_by(desc(SyncLog.created_at)).limit(50).all()
+        ).order_by(desc(SyncLog.data_hora)).limit(50).all()
 
         historico = []
         for log in logs:
+            # Ajuste simples de fuso horário (-3 horas para Brasília)
+            # Na exibição, o frontend cuidará de formatar, mas enviamos o ISO
             historico.append({
                 "id": log.id,
                 "status": log.status,
-                "data": log.created_at.isoformat() if log.created_at else None,
+                "data": log.data_hora.isoformat() if log.data_hora else None,
                 "paciente": log.paciente_nome
             })
 
