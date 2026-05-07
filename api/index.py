@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 
 from flask import Flask, request as flask_request, jsonify
@@ -78,6 +78,14 @@ def token_required(f):
             
     return decorated
 
+def admin_required(f):
+    @wraps(f)
+    def decorated(current_user, *args, **kwargs):
+        if not current_user.is_admin:
+            return jsonify({'error': 'Acesso negado. Apenas administradores podem acessar esta rota.'}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
+
 @app.route('/auth/signup', methods=['POST'])
 def signup():
     data = flask_request.get_json()
@@ -95,17 +103,20 @@ def signup():
         if db.query(Medico).filter(Medico.email == email).first():
             return jsonify({"error": "E-mail já cadastrado"}), 400
         
+        expires_at = datetime.utcnow() + timedelta(days=7)
+        
         new_medico = Medico(
             nome=nome,
             email=email,
             crm=crm,
             uf_crm=uf_crm.upper(), # Salva sempre em maiúsculo (Ex: SP)
             password_hash=hash_password(password),
-            is_active=False
+            is_active=True,
+            subscription_expires_at=expires_at
         )
         db.add(new_medico)
         db.commit()
-        return jsonify({"status": "ok", "message": "Cadastro realizado! Aguarde a ativação da sua conta."}), 201
+        return jsonify({"status": "ok", "message": "Cadastro realizado com sucesso!"}), 201
     finally:
         db.close()
 
@@ -132,7 +143,10 @@ def login():
             "medico": {
                 "id": medico.id,
                 "nome": medico.nome,
+                "email": medico.email,
                 "crm": medico.crm,
+                "uf_crm": medico.uf_crm,
+                "is_admin": medico.is_admin,
                 "expires_at": medico.subscription_expires_at.isoformat() if medico.subscription_expires_at else None
             }
         })
@@ -373,7 +387,8 @@ def dashboard_stats(current_user):
             "subscription_expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None,
             "nome": current_user.nome,
             "crm": current_user.crm,
-            "uf_crm": current_user.uf_crm
+            "uf_crm": current_user.uf_crm,
+            "is_admin": current_user.is_admin
         })
     finally:
         db.close()
@@ -491,5 +506,75 @@ def dashboard_historico(current_user):
             })
 
         return jsonify({"historico": historico, "total": len(historico)})
+    finally:
+        db.close()
+
+# =========================================
+# ROTAS ADMINISTRATIVAS (Gestão de Médicos)
+# =========================================
+
+@app.route('/admin/users', methods=['GET'])
+@token_required
+@admin_required
+def admin_get_users(current_user):
+    """Lista todos os médicos cadastrados para o administrador."""
+    db = SessionLocal()
+    try:
+        medicos = db.query(Medico).order_by(Medico.id).all()
+        lista = []
+        for m in medicos:
+            lista.append({
+                "id": m.id,
+                "nome": m.nome,
+                "email": m.email,
+                "crm": m.crm,
+                "uf_crm": m.uf_crm,
+                "is_active": m.is_active,
+                "is_admin": m.is_admin,
+                "expires_at": m.subscription_expires_at.isoformat() if m.subscription_expires_at else None
+            })
+        return jsonify(lista)
+    finally:
+        db.close()
+
+@app.route('/admin/users/<int:user_id>/renew', methods=['POST'])
+@token_required
+@admin_required
+def admin_renew_user(current_user, user_id):
+    """Adiciona 30 dias de licença ao médico especificado."""
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).get(user_id)
+        if not medico:
+            return jsonify({"error": "Médico não encontrado"}), 404
+        
+        # Se já expirou, renova a partir de hoje. Se ainda não expirou, soma 30 dias à data atual.
+        base_date = datetime.utcnow()
+        if medico.subscription_expires_at and medico.subscription_expires_at > base_date:
+            base_date = medico.subscription_expires_at
+            
+        medico.subscription_expires_at = base_date + timedelta(days=30)
+        medico.is_active = True
+        db.commit()
+        
+        return jsonify({"status": "ok", "new_expiry": medico.subscription_expires_at.isoformat()})
+    finally:
+        db.close()
+
+@app.route('/admin/users/<int:user_id>/toggle-status', methods=['POST'])
+@token_required
+@admin_required
+def admin_toggle_status(current_user, user_id):
+    """Ativa ou desativa um médico manualmente."""
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).get(user_id)
+        if not medico:
+            return jsonify({"error": "Médico não encontrado"}), 404
+            
+        medico.is_active = not medico.is_active
+        db.commit()
+        
+        return jsonify({"status": "ok", "is_active": medico.is_active})
     finally:
         db.close()
