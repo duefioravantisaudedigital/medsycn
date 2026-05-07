@@ -176,6 +176,7 @@ def cadastrar_paciente(current_user):
     city = data.get('city', '')
     zipcode = data.get('zipcode', '')
     token = data.get('memed_token', '').strip()
+    appointment_date = data.get('appointment_date')  # Data real da consulta no Medprev
 
     # O nome do médico agora vem do token autenticado
     doctor_name = current_user.nome
@@ -241,7 +242,19 @@ def cadastrar_paciente(current_user):
             db.refresh(paciente)
 
         # Cria a consulta vinculada EXATAMENTE ao ID do médico logado
-        consulta = Consulta(paciente_id=paciente.id, medico_id=medico.id)
+        # Usa a data real da consulta se disponível, senão usa o momento da sync
+        data_agendamento = None
+        if appointment_date:
+            try:
+                data_agendamento = datetime.strptime(appointment_date, "%Y-%m-%d")
+            except ValueError:
+                pass
+
+        consulta = Consulta(
+            paciente_id=paciente.id,
+            medico_id=medico.id,
+            data_consulta=data_agendamento  # Data real da consulta!
+        )
         db.add(consulta)
         db.commit()
         db.refresh(consulta)
