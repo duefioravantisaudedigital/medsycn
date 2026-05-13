@@ -357,17 +357,38 @@ def cadastrar_paciente(current_user):
 @token_required
 def dashboard_stats(current_user):
     """Retorna métricas gerais do médico logado."""
-    from sqlalchemy import func, extract
+    from sqlalchemy import func, extract, cast, Date
     db = SessionLocal()
     try:
         medico_id = current_user.id
-        now = datetime.utcnow()
-        inicio_mes = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        now = datetime.utcnow() - timedelta(hours=3)  # Brasília
+        periodo = flask_request.args.get('periodo', 'mes')
 
-        # Total de consultas deste mês
-        total_mes = db.query(func.count(Consulta.id)).filter(
+        # Define a data de início baseada no período
+        if periodo == 'dia':
+            inicio_periodo = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            label_periodo = "hoje"
+        elif periodo == 'semana':
+            inicio_periodo = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            label_periodo = "nesta semana"
+        elif periodo == 'ano':
+            inicio_periodo = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            label_periodo = "neste ano"
+        else:  # mes (padrão)
+            inicio_periodo = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            label_periodo = "neste mês"
+
+        # Total de consultas no período selecionado
+        total_periodo = db.query(func.count(Consulta.id)).filter(
             Consulta.medico_id == medico_id,
-            Consulta.data_consulta >= inicio_mes
+            Consulta.data_consulta >= inicio_periodo
+        ).scalar() or 0
+
+        # Consultas de HOJE (sempre visível, independente do filtro)
+        hoje = now.date()
+        consultas_hoje = db.query(func.count(Consulta.id)).filter(
+            Consulta.medico_id == medico_id,
+            cast(Consulta.data_consulta, Date) == hoje
         ).scalar() or 0
 
         # Total de pacientes únicos deste médico (todos os tempos)
@@ -375,21 +396,12 @@ def dashboard_stats(current_user):
             Consulta.medico_id == medico_id
         ).scalar() or 0
 
-        # Sucessos deste mês
-        total_sucesso = db.query(func.count(SyncLog.id)).join(
-            Consulta, SyncLog.consulta_id == Consulta.id
-        ).filter(
-            Consulta.medico_id == medico_id,
-            Consulta.data_consulta >= inicio_mes,
-            SyncLog.status.like("SUCESSO%")
-        ).scalar() or 0
-
-        # Erros deste mês
+        # Erros no período
         total_erros = db.query(func.count(SyncLog.id)).join(
             Consulta, SyncLog.consulta_id == Consulta.id
         ).filter(
             Consulta.medico_id == medico_id,
-            Consulta.data_consulta >= inicio_mes,
+            Consulta.data_consulta >= inicio_periodo,
             SyncLog.status.like("ERRO%")
         ).scalar() or 0
 
@@ -400,7 +412,11 @@ def dashboard_stats(current_user):
         tempo_economizado_minutos = total_geral_consultas * 1.5
 
         return jsonify({
-            "processados_mes": total_mes,
+            "processados": total_periodo,
+            "processados_mes": total_periodo,  # Mantém compatibilidade
+            "consultas_hoje": consultas_hoje,
+            "periodo": periodo,
+            "label_periodo": label_periodo,
             "total_pacientes": total_pacientes,
             "tempo_economizado_minutos": tempo_economizado_minutos,
             "total_erros": total_erros,
