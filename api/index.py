@@ -404,11 +404,29 @@ def dashboard_stats(current_user):
             "tempo_economizado_minutos": tempo_economizado_minutos,
             "total_erros": total_erros,
             "subscription_expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None,
+            "whatsapp_template": current_user.whatsapp_template,
             "nome": current_user.nome,
             "crm": current_user.crm,
             "uf_crm": current_user.uf_crm,
             "is_admin": current_user.is_admin
         })
+    finally:
+        db.close()
+
+@app.route('/dashboard/template', methods=['POST'])
+@token_required
+def update_whatsapp_template(current_user):
+    data = flask_request.get_json()
+    template = data.get('template')
+    
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).filter(Medico.id == current_user.id).first()
+        medico.whatsapp_template = template
+        db.commit()
+        return jsonify({"status": "ok", "message": "Template atualizado com sucesso!"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         db.close()
 
