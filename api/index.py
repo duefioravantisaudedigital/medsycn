@@ -557,15 +557,16 @@ def dashboard_historico(current_user):
 @token_required
 def dashboard_consultas_hoje(current_user):
     """Retorna as consultas agendadas para o dia de hoje do médico logado."""
-    from sqlalchemy import cast, Date
+    from sqlalchemy import cast, Date, func
     db = SessionLocal()
     try:
         # Pega a data de hoje (Brasília)
         hoje = (datetime.utcnow() - timedelta(hours=3)).date()
         
+        # Agrupa por paciente para evitar duplicatas
         query = db.query(
-            Consulta.id,
-            Consulta.data_consulta,
+            func.min(Consulta.id).label('id'),
+            func.min(Consulta.data_consulta).label('data_consulta'),
             Paciente.nome.label('paciente_nome'),
             Paciente.telefone.label('paciente_telefone')
         ).join(
@@ -573,7 +574,9 @@ def dashboard_consultas_hoje(current_user):
         ).filter(
             Consulta.medico_id == current_user.id,
             cast(Consulta.data_consulta, Date) == hoje
-        ).order_by(Consulta.data_consulta.asc())
+        ).group_by(
+            Paciente.id, Paciente.nome, Paciente.telefone
+        ).order_by(func.min(Consulta.data_consulta).asc())
 
         resultados = query.all()
         
