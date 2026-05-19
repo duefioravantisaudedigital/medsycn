@@ -222,9 +222,11 @@ def set_password():
     data = flask_request.get_json()
     email = data.get('email', '').lower().strip()
     password = data.get('password')
+    crm = data.get('crm')
+    uf_crm = data.get('uf_crm')
 
-    if not all([email, password]):
-        return jsonify({"error": "E-mail e senha são obrigatórios"}), 400
+    if not all([email, password, crm, uf_crm]):
+        return jsonify({"error": "Preencha todos os campos obrigatórios"}), 400
 
     db = SessionLocal()
     try:
@@ -236,8 +238,10 @@ def set_password():
         if medico.password_hash:
             return jsonify({"error": "Usuário já possui senha definida. Faça login."}), 400
             
-        # Define a senha
+        # Define a senha e dados
         medico.password_hash = hash_password(password)
+        medico.crm = crm
+        medico.uf_crm = uf_crm.upper()
         
         # Opcional: Se quiser que ele já comece o trial assim que criar a senha
         if not medico.is_active:
