@@ -158,6 +158,113 @@ def login():
     finally:
         db.close()
 
+@app.route('/auth/lead', methods=['POST'])
+def add_lead():
+    data = flask_request.get_json()
+    nome = data.get('full_name')
+    email = data.get('email', '').lower().strip()
+    whatsapp = data.get('whatsapp')
+    crm = data.get('crm')
+    uf_crm = data.get('state')
+
+    if not all([nome, email, whatsapp, uf_crm]):
+        return jsonify({"error": "Nome, email, whatsapp e estado são obrigatórios"}), 400
+
+    db = SessionLocal()
+    try:
+        if db.query(Medico).filter(Medico.email == email).first():
+            return jsonify({"error": "E-mail já cadastrado"}), 400
+        
+        new_medico = Medico(
+            nome=nome,
+            email=email,
+            crm=crm,
+            uf_crm=uf_crm.upper() if uf_crm else None,
+            telefone=whatsapp,
+            password_hash=None, # Sem senha ainda
+            is_active=False,    # Aguardando aprovação
+            plan_type="trial"
+        )
+        db.add(new_medico)
+        db.commit()
+        return jsonify({"status": "ok", "message": "Lead captado com sucesso!"}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+@app.route('/auth/check-email', methods=['POST'])
+def check_email():
+    data = flask_request.get_json()
+    email = data.get('email', '').lower().strip()
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório"}), 400
+
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).filter(Medico.email == email).first()
+        if not medico:
+            return jsonify({"status": "not_found"}), 200
+        
+        if not medico.password_hash:
+            return jsonify({
+                "status": "needs_password", 
+                "nome": medico.nome
+            }), 200
+            
+        return jsonify({"status": "has_password"}), 200
+    finally:
+        db.close()
+
+@app.route('/auth/set-password', methods=['POST'])
+def set_password():
+    data = flask_request.get_json()
+    email = data.get('email', '').lower().strip()
+    password = data.get('password')
+
+    if not all([email, password]):
+        return jsonify({"error": "E-mail e senha são obrigatórios"}), 400
+
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).filter(Medico.email == email).first()
+        
+        if not medico:
+            return jsonify({"error": "Usuário não encontrado"}), 404
+            
+        if medico.password_hash:
+            return jsonify({"error": "Usuário já possui senha definida. Faça login."}), 400
+            
+        # Define a senha
+        medico.password_hash = hash_password(password)
+        
+        # Opcional: Se quiser que ele já comece o trial assim que criar a senha
+        if not medico.is_active:
+            medico.is_active = True
+            medico.subscription_expires_at = datetime.utcnow() + timedelta(days=7)
+            
+        db.commit()
+        
+        # Já gera o token e faz o login automático
+        token = create_access_token(data={"sub": medico.id, "email": medico.email})
+        
+        return jsonify({
+            "token": token,
+            "medico": {
+                "id": medico.id,
+                "nome": medico.nome,
+                "email": medico.email,
+                "crm": medico.crm,
+                "uf_crm": medico.uf_crm,
+                "is_admin": medico.is_admin,
+                "plan_type": medico.plan_type,
+                "expires_at": medico.subscription_expires_at.isoformat() if medico.subscription_expires_at else None
+            }
+        })
+    finally:
+        db.close()
+
 @app.route('/auth/me', methods=['GET'])
 @token_required
 def get_me(current_user):
