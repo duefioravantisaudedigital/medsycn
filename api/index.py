@@ -236,34 +236,13 @@ def set_password():
         if medico.password_hash:
             return jsonify({"error": "Usuário já possui senha definida. Faça login."}), 400
             
-        # Define a senha e dados
+        # Define a senha e dados — conta permanece inativa até ativação manual pelo admin
         medico.password_hash = hash_password(password)
         medico.crm = crm
         medico.uf_crm = uf_crm.upper()
-        
-        # Opcional: Se quiser que ele já comece o trial assim que criar a senha
-        if not medico.is_active:
-            medico.is_active = True
-            medico.subscription_expires_at = datetime.utcnow() + timedelta(days=7)
-            
         db.commit()
-        
-        # Já gera o token e faz o login automático
-        token = create_access_token(data={"sub": medico.id, "email": medico.email})
-        
-        return jsonify({
-            "token": token,
-            "medico": {
-                "id": medico.id,
-                "nome": medico.nome,
-                "email": medico.email,
-                "crm": medico.crm,
-                "uf_crm": medico.uf_crm,
-                "is_admin": medico.is_admin,
-                "plan_type": medico.plan_type,
-                "expires_at": medico.subscription_expires_at.isoformat() if medico.subscription_expires_at else None
-            }
-        })
+
+        return jsonify({"status": "ok", "message": "Senha definida com sucesso! Aguarde a ativação da sua conta pela equipe Due."})
     finally:
         db.close()
 
