@@ -106,16 +106,14 @@ def signup():
         if db.query(Medico).filter(Medico.email == email).first():
             return jsonify({"error": "E-mail já cadastrado"}), 400
         
-        expires_at = datetime.utcnow() + timedelta(days=7)
-        
         new_medico = Medico(
             nome=nome,
             email=email,
             crm=crm,
-            uf_crm=uf_crm.upper(), # Salva sempre em maiúsculo (Ex: SP)
+            uf_crm=uf_crm.upper(),
             password_hash=hash_password(password),
-            is_active=True,
-            subscription_expires_at=expires_at,
+            is_active=False,
+            subscription_expires_at=None,
             plan_type="trial"
         )
         db.add(new_medico)
@@ -747,6 +745,29 @@ def admin_get_users(current_user):
                 "expires_at": m.subscription_expires_at.isoformat() if m.subscription_expires_at else None
             })
         return jsonify(lista)
+    finally:
+        db.close()
+
+@app.route('/admin/users/<int:user_id>/activate-trial', methods=['POST'])
+@token_required
+@admin_required
+def admin_activate_trial(current_user, user_id):
+    """Ativa o trial de 7 dias para um médico pendente."""
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).get(user_id)
+        if not medico:
+            return jsonify({"error": "Médico não encontrado"}), 404
+
+        if medico.is_active and medico.subscription_expires_at and medico.subscription_expires_at > datetime.utcnow():
+            return jsonify({"error": "Médico já possui assinatura ativa"}), 400
+
+        medico.is_active = True
+        medico.plan_type = "trial"
+        medico.subscription_expires_at = datetime.utcnow() + timedelta(days=7)
+        db.commit()
+
+        return jsonify({"status": "ok", "expires_at": medico.subscription_expires_at.isoformat()})
     finally:
         db.close()
 
