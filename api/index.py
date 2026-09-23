@@ -1,7 +1,8 @@
+import hmac
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 
 from flask import Flask, request as flask_request, jsonify
@@ -792,3 +793,133 @@ def admin_toggle_status(current_user, user_id):
         return jsonify({"status": "ok", "is_active": medico.is_active})
     finally:
         db.close()
+
+# ==========================================================
+# ASSINATURAS (chamado pela API Java do C6, server-to-server)
+# ==========================================================
+
+ASSINATURA_WEBHOOK_SECRET = os.getenv("ASSINATURA_WEBHOOK_SECRET")
+
+@app.route('/webhook/assinatura', methods=['POST'])
+def webhook_assinatura():
+    """Recebe da API C6 o novo período pago e libera o acesso do médico."""
+    secret = flask_request.headers.get('x-webhook-secret', '')
+    if not ASSINATURA_WEBHOOK_SECRET or not hmac.compare_digest(secret, ASSINATURA_WEBHOOK_SECRET):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = flask_request.get_json(silent=True) or {}
+    medico_id = data.get('medico_id')
+    status = data.get('status')
+    expires_at = data.get('expires_at')
+
+    if not medico_id or not status:
+        return jsonify({"error": "medico_id e status são obrigatórios"}), 400
+
+    db = SessionLocal()
+    try:
+        medico = db.query(Medico).get(medico_id)
+        if not medico:
+            return jsonify({"error": "Médico não encontrado"}), 404
+
+        if status == 'ATIVA':
+            if not expires_at:
+                return jsonify({"error": "expires_at obrigatório para status ATIVA"}), 400
+            # Java manda ISO com fuso (ex: 2026-10-23T16:49:00-03:00); aqui guardamos em UTC sem fuso
+            vence = datetime.fromisoformat(expires_at)
+            if vence.tzinfo is not None:
+                vence = vence.astimezone(timezone.utc).replace(tzinfo=None)
+
+            medico.subscription_expires_at = vence
+            medico.plan_type = "pro"
+            medico.is_active = True
+        # CANCELADA / INADIMPLENTE: acesso segue até subscription_expires_at, nada a mudar aqui
+
+        db.commit()
+        print(f"[assinatura] medico_id={medico_id} status={status} expires_at={medico.subscription_expires_at}")
+        return jsonify({"status": "ok"})
+    finally:
+        db.close()
+
+C6_API_URL = os.getenv("C6_API_URL", "").rstrip("/")
+C6_API_KEY = os.getenv("C6_API_KEY")
+PLANOS_VALIDOS = {"MENSAL", "SEMESTRAL", "ANUAL"}
+
+def token_sem_assinatura(f):
+    """Valida o JWT, mas NÃO bloqueia assinatura vencida (é justamente quem precisa pagar)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = flask_request.headers.get('Authorization', '')
+        token = auth_header.split(" ")[1] if auth_header.startswith("Bearer ") else None
+        if not token:
+            return jsonify({'error': 'Token de acesso ausente!'}), 401
+
+        data = decode_token(token)
+        if not data:
+            return jsonify({'error': 'Token inválido ou expirado!'}), 401
+
+        db = SessionLocal()
+        try:
+            current_user = db.query(Medico).filter(Medico.id == data['sub']).first()
+            if not current_user:
+                return jsonify({'error': 'Médico não encontrado!'}), 401
+            return f(current_user, *args, **kwargs)
+        finally:
+            db.close()
+    return decorated
+
+@app.route('/assinaturas/checkout', methods=['POST'])
+@token_sem_assinatura
+def criar_checkout_assinatura(current_user):
+    """Dashboard -> MedSync -> API C6. O medico_id vem do token, nunca do body."""
+    if not C6_API_URL or not C6_API_KEY:
+        return jsonify({"error": "Pagamento indisponível no momento"}), 503
+
+    data = flask_request.get_json(silent=True) or {}
+    plano = str(data.get('plano', '')).upper().strip()
+    if plano not in PLANOS_VALIDOS:
+        return jsonify({"error": "Plano inválido"}), 400
+
+    obrigatorios = ['nome', 'taxId', 'email', 'telefone', 'rua', 'numero', 'cidade', 'uf', 'cep']
+    faltando = [c for c in obrigatorios if not data.get(c)]
+    if faltando:
+        return jsonify({"error": f"Campos obrigatórios: {', '.join(faltando)}"}), 400
+
+    try:
+        numero = int(extrair_apenas_numeros(str(data['numero'])))
+    except ValueError:
+        return jsonify({"error": "Número do endereço inválido"}), 400
+
+    payload = {
+        "medicoId": current_user.id,
+        "plano": plano,
+        "nome": str(data['nome']).strip(),
+        "taxId": extrair_apenas_numeros(str(data['taxId'])),
+        "email": str(data['email']).strip().lower(),
+        "telefone": extrair_apenas_numeros(str(data['telefone'])),
+        "rua": str(data['rua']).strip(),
+        "numero": numero,
+        "complemento": (str(data['complemento']).strip() or None) if data.get('complemento') else None,
+        "cidade": str(data['cidade']).strip(),
+        "uf": str(data['uf']).strip().upper(),
+        "cep": extrair_apenas_numeros(str(data['cep'])),
+    }
+
+    try:
+        resp = requests.post(
+            f"{C6_API_URL}/assinaturas",
+            json=payload,
+            headers={"x-medsync-key": C6_API_KEY},
+            timeout=20,
+        )
+    except requests.RequestException as e:
+        print(f"[assinatura] erro ao chamar API C6: medico_id={current_user.id} erro={e}")
+        return jsonify({"error": "Não foi possível gerar o pagamento. Tente novamente."}), 502
+
+    if resp.status_code == 409:
+        return jsonify({"error": "Você já possui uma assinatura ativa."}), 409
+    if resp.status_code != 201:
+        print(f"[assinatura] API C6 respondeu {resp.status_code}: medico_id={current_user.id}")
+        return jsonify({"error": "Não foi possível gerar o pagamento. Tente novamente."}), 502
+
+    body = resp.json()
+    return jsonify({"url": body.get("url"), "checkoutId": body.get("checkoutId")}), 201
