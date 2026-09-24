@@ -253,8 +253,12 @@ def get_me(current_user):
     return jsonify({
         "id": current_user.id,
         "nome": current_user.nome,
+        "email": current_user.email,
         "crm": current_user.crm,
+        "uf_crm": current_user.uf_crm,
+        "is_admin": current_user.is_admin,
         "is_active": current_user.is_active,
+        "plan_type": current_user.plan_type,
         "expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None
     })
 
