@@ -113,8 +113,8 @@ def signup():
             crm=crm,
             uf_crm=uf_crm.upper(),
             password_hash=hash_password(password),
-            is_active=False,
-            subscription_expires_at=None,
+            is_active=True,
+            subscription_expires_at=datetime.utcnow() + timedelta(days=7),
             plan_type="trial"
         )
         db.add(new_medico)
